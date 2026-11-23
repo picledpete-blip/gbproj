@@ -123,6 +123,7 @@ cpu.opcodes = {
         return 8
     end,
     [0x20] = function (self)
+        
         local offset = self:fetch8()
         if not self.regs:getflag(FZ) then
             if offset > 127 then
@@ -139,12 +140,30 @@ cpu.opcodes = {
         self.regs:setreg(14, h*256+l)
         return 12
     end,
+    [0x30] = function (self)
+        
+        local offset = self:fetch8()
+        if not self.regs:getflag(FC) then
+            if offset > 127 then
+                offset = offset - 256
+            end
+            self.regs:setreg(9, self.regs.pc + offset)
+            return 12
+        end
+        return 8
+    end,
     [0x32] = function (self)
         local hl = (self.regs["h"] * 256) + self.regs["l"]
         local a = self.regs.a
         self.ram:writeb(hl,a)
         self.regs:setreg(14,hl-1)
         return 8
+    end,
+    [0x36] = function (self)
+        local hl = (self.regs["h"] * 256) + self.regs["l"]
+        local val = self:fetch8()
+        self.ram:writeb(hl,val)
+        return 12
     end,
     [0x3e] = function (self)
         local v = self:fetch8()
@@ -196,11 +215,16 @@ cpu.opcodes = {
         self.regs.pc = high * 256 + low
         return 16
     end,
-    [0xC9] = function(self)
+    [0xc9] = function(self)
         self.regs.pc = self:pop16()
         return 16
     end,
-        [0xCD] = function(self)
+    [0xe0] = function(self)
+        local u8 = self:fetch8()
+        self.ram:writeb(0xff00+u8, self.regs.a)
+        return 12
+    end,
+    [0xcd] = function(self)
         local low = self:fetch8()
         local high = self:fetch8()
         local address = high * 256 + low
@@ -208,6 +232,19 @@ cpu.opcodes = {
         self.regs.pc = address
 
         return 24
+    end,
+    [0xea] = function (self)
+        local v1 = self:fetch8()
+        local v2 = self:fetch8()
+        local addr = (v2 * 256) + v1
+        local a = self.regs.a
+        self.ram:writeb(addr,a)
+        return 16
+    end,
+    [0xf0] = function(self)
+        local u8 = self:fetch8()
+        self.regs:setreg(0,self.ram:readb(0xff00 + u8))
+        return 12
     end,
     [0xf3] = function (self)
         self.ime = false
@@ -218,7 +255,17 @@ cpu.opcodes = {
         self.eipend = 2
         return 4
     end,
+    [0xfe] = function(self)
+        local val = self:fetch8()
+        local a = self.regs.a
+        local result = a - val
+        self.regs:setflag(FZ, result == 0)
+        self.regs:setflag(FN, true)
+        self.regs:setflag(FH, (a % 16) < (val % 16))
+        self.regs:setflag(FC, a < val)
 
+        return 8
+    end,
 }
 
 function cpu:dump()
@@ -289,7 +336,9 @@ end
 local cpf = 70224
 function cpu:runit()
     local tcycles = 0
-    while tcycles < 70224 do
+        while tcycles < 70224 do
+        local cycles = 0
+
         if self.halt then
             local pending = bit.band(
                 self.ram:readb(0xFFFF),
@@ -298,21 +347,22 @@ function cpu:runit()
             )
 
             if pending == 0 then
-                tcycles = tcycles + 4
+                cycles = 4
             else
                 self.halt = false
+                cycles = 4
             end
         else
         local intc = self:handint()
         if intc > 0 then
-            tcycles = tcycles + intc
+            cycles = intc
         else
         local pc = self.regs["pc"]
         local b0 = self:fetch8()
         self.fpc = pc
         self.fb0 = b0
         self.fb1 = self.ram:readb(pc+1)
-        tcycles = tcycles + cpu.opcodes[b0](self)
+        cycles = cpu.opcodes[b0](self)
         if self.eipend > 0 then
             self.eipend = self.eipend - 1
             if self.eipend <= 0 then
@@ -320,6 +370,10 @@ function cpu:runit()
             end
         end
     end
+    if cycles > 0 then
+            self.ppu:tick(cycles)
+            tcycles = tcycles + cycles
+    end        
 end
     end
     return

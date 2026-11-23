@@ -17,6 +17,11 @@ function ram:init()
     for addr = 0xFF80, 0xFFFE do
         self.memory.hram[addr] = 0
     end
+    self.io = {}
+    self.io[0xFF40] = 0x91 -- LCDC
+    self.io[0xFF41] = 0x86 -- STAT
+    self.io[0xFF44] = 0x00 -- LY
+    self.io[0xFF47] = 0xFC -- BGP
 end
 
 function ram:ldrom(path)
@@ -41,10 +46,13 @@ function ram:readb(addr)
         return self.memory.wram[addr]
     elseif addr >= 0xE000 and addr <= 0xFDFF then
         return self.memory.wram[addr - 0x2000]
-    elseif addr == 0xff0f then
-        return self.intflag
+    elseif addr >= 0xFF00 and addr <= 0xFF7F then
+        if addr == 0xFF0F then
+            return self.intflag
+        end
+        return self.io[addr] or 0x00
     elseif addr >= 0xFF80 and addr <= 0xFFFE then
-        return self.hram[addr]
+        return self.memory.hram[addr]
     elseif addr == 0xffff then
         return self.inten
     end
@@ -60,8 +68,12 @@ function ram:writeb(addr, val)
         self.memory.wram[addr] = val
     elseif addr >= 0xE000 and addr <= 0xFDFF then
         self.memory.wram[addr - 0x2000] = val
-    elseif addr == 0xff0f then
-        self.intflag = val
+    elseif addr >= 0xFF00 and addr <= 0xFF7F then
+        if addr == 0xFF0F then
+            self.intflag = val
+        else
+            self.io[addr] = val
+        end
     elseif addr >= 0xFF80 and addr <= 0xFFFE then
         self.memory.hram[addr] = val
     elseif addr == 0xffff then
