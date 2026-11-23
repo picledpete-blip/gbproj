@@ -238,6 +238,13 @@ cpu.opcodes = {
 
         return 4
     end,
+    [0xa7] = function (self)
+        self.regs:setflag(FZ, self.regs.a == 0)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, true)
+        self.regs:setflag(FC, false)
+        return 4
+    end,
     [0xaf] = function (self)
         self.regs:setreg(0,0)
         self.regs:setflag(FZ, true)
@@ -267,6 +274,12 @@ cpu.opcodes = {
         self.regs.pc = self:pop16()
         return 16
     end,
+    [0xd5] = function (self)
+        local d = self.regs.d
+        local e = self.regs.e
+        self:push16(d*256+e)
+        return 16
+    end,
     [0xe0] = function(self)
         local u8 = self:fetch8()
         self.ram:writeb(0xff00+u8, self.regs.a)
@@ -278,11 +291,17 @@ cpu.opcodes = {
         self.ram:writeb(0xff00+c, self.regs.a)
         return 8
     end,
+    [0xe5] = function (self)
+        local h = self.regs.h
+        local l = self.regs.l
+        self:push16(h*256+l)
+        return 16
+    end,
     [0xc5] = function (self)
         local b = self.regs.b
         local c = self.regs.c
         self:push16(b*256+c)
-        return 4
+        return 16
     end,
     [0xcd] = function(self)
         local low = self:fetch8()
@@ -315,7 +334,7 @@ cpu.opcodes = {
         local a = self.regs.a
         local f = self.regs.f
         self:push16(a*256+f)
-        return 4
+        return 16
     end,
     [0xfb] = function (self)
         self.eipend = 2
