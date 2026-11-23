@@ -1,13 +1,7 @@
 local cpu = {}
 cpu.ram = require("ram")
+local bit = require("bit")
 cpu.ime = false
-local IE_ADDR = 0xFFFF
-local IF_ADDR = 0xFF0F
-local INT_VBLANK = 0x01
-local INT_LCD    = 0x02
-local INT_TIMER  = 0x04
-local INT_SERIAL = 0x08
-local INT_JOYPAD = 0x10
 cpu.ei_pending = false
 cpu.regs = {
     a = 0x00,
@@ -183,6 +177,14 @@ cpu.opcodes = {
         self.regs:setreg(9,naddr)
         return 16
     end,
+    [0xf3] = function (self)
+        self.ime = false
+        return 4
+    end,
+    [0xfb] = function (self)
+        self.ime = true
+        return 4
+    end,
 
 }
 
@@ -194,6 +196,10 @@ end
 function cpu:init()
     cpu.ram:init()
     cpu.ram:ldrom("tetris.gb")
+end
+
+cpu:handint()
+    local ints = bit.band(self.ram:readb(0xff0f), self.ram:readb(0xffff))
 end
 
 local cpf = 70224

@@ -5,7 +5,8 @@ ram.memory = {
     wram = {}, --0xc0000 - 0xdfff 8kb
     hram = {}, --0xff80 - 0xfffe
 }
-
+ram.intflag = 0x00 --0-4 vblank lcd timer serial joypad
+ram.inten = 0x00
 function ram:init()
     for addr = 0x8000, 0x9FFF do
         self.memory.vram[addr] = 0
@@ -40,8 +41,12 @@ function ram:readb(addr)
         return self.memory.wram[addr]
     elseif addr >= 0xE000 and addr <= 0xFDFF then
         return self.memory.wram[addr - 0x2000]
+    elseif addr == 0xff0f then
+        return self.intflag
     elseif addr >= 0xFF80 and addr <= 0xFFFE then
         return self.hram[addr]
+    elseif addr == 0xffff then
+        return self.inten
     end
     return 0xFF
 end
@@ -55,8 +60,12 @@ function ram:writeb(addr, val)
         self.memory.wram[addr] = val
     elseif addr >= 0xE000 and addr <= 0xFDFF then
         self.memory.wram[addr - 0x2000] = val
+    elseif addr == 0xff0f then
+        self.intflag = val
     elseif addr >= 0xFF80 and addr <= 0xFFFE then
         self.memory.hram[addr] = val
+    elseif addr == 0xffff then
+        self.inten = val
     end
 end
 
