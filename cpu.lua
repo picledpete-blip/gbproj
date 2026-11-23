@@ -1,8 +1,9 @@
 local cpu = {}
 cpu.ram = require("ram")
 local bit = require("bit")
+cpu.halt = false
 cpu.ime = false
-cpu.ei_pending = false
+cpu.eipend = 0
 cpu.regs = {
     a = 0x00,
     b = 0x00,
@@ -12,7 +13,7 @@ cpu.regs = {
     f = 0x00,
     h = 0x00,
     l = 0x00,
-    sp = 0x0000,
+    sp = 0xfffe,
     pc = 0x0100
 }
 regslookup = {
@@ -34,9 +35,10 @@ function cpu.regs:setreg(reg,val) -- 0-9 a-pc 11-14 af-hl
     self.f = val % 256 - (val % 16)
     return
     end
-    if reg < 9 then
-    self[regslookup[reg]] = val
-    self[regslookup[reg]] = self[regslookup[reg]] % 256
+    if reg < 8 then
+        self[regslookup[reg]] = val % 256
+    elseif reg < 10 then
+        self[regslookup[reg]] = val % 65536
     elseif reg < 11 then      
     self[regslookup[reg]] = val
     self[regslookup[reg]] = self[regslookup[reg]] % 65536
@@ -80,8 +82,12 @@ function cpu.regs:setflag(mask, value)
 end
 
 function cpu:fetch8()
-    local val = self.ram:readb(self.regs["pc"])
-    self.regs["pc"] = (self.regs["pc"] + 1) % 65536
+    local val = self.ram:readb(self.regs.pc)
+    if self.halt_bug then
+        self.halt_bug = false
+    else
+        self.regs.pc = (self.regs.pc + 1) % 65536
+    end
     return val
 end
 
@@ -118,11 +124,11 @@ cpu.opcodes = {
     end,
     [0x20] = function (self)
         local offset = self:fetch8()
-        if not cpu.regs:getflag(FZ) then
+        if not self.regs:getflag(FZ) then
             if offset > 127 then
                 offset = offset - 256
             end
-            cpu.regs:setreg(9, cpu.regs.pc + offset)
+            self.regs:setreg(9, self.regs.pc + offset)
             return 12
         end
         return 8
@@ -144,6 +150,21 @@ cpu.opcodes = {
         local v = self:fetch8()
         self.regs:setreg(0, v)
         return 8
+    end,
+    [0x76] = function(self)
+        local pending = bit.band(
+            self.ram:readb(0xFFFF),
+            self.ram:readb(0xFF0F),
+            0x1F
+        )
+
+        if not self.ime and pending ~= 0 then
+            self.halt_bug = true
+        else
+            self.halt = true
+        end
+
+        return 4
     end,
     [0x80] = function(self)
         local a = self.regs.a
@@ -169,12 +190,10 @@ cpu.opcodes = {
 
         return 4
     end,
-    [0xc3] = function (self)
-        local pc = self.regs["pc"]
-        local l = self.ram:readb(pc)
-        local h = self.ram:readb(pc+1)
-        local naddr = (h * 256) + l
-        self.regs:setreg(9,naddr)
+    [0xC3] = function(self)
+        local low = self:fetch8()
+        local high = self:fetch8()
+        self.regs.pc = high * 256 + low
         return 16
     end,
     [0xC9] = function(self)
@@ -192,10 +211,11 @@ cpu.opcodes = {
     end,
     [0xf3] = function (self)
         self.ime = false
+        self.eipend = 0
         return 4
     end,
     [0xfb] = function (self)
-        self.ime = true
+        self.eipend = 2
         return 4
     end,
 
@@ -235,25 +255,72 @@ local intjumps = {
     [3] = 0x0058, -- serial
     [4] = 0x0060  -- joypad
 }
-cpu:handint()
-    local ints = bit.band(self.ram:readb(0xff0f), self.ram:readb(0xffff))
+function cpu:handint()
+    local ie = self.ram:readb(0xFFFF)
+    local flags = self.ram:readb(0xFF0F)
+    local ints = bit.band(ie, flags, 0x1F)
+    
+    if ints == 0 then
+        return 0
+    end
+    self.halt = false
+    if not self.ime then
+        return 0
+    end
     for i = 0, 4 do
-        local mask = 1 << i
+        local mask = bit.lshift(1, i)
 
-        if (ints & mask) ~= 0 then
+        if bit.band(ints, mask) ~= 0 then
             self.ime = false
+            self.ram:writeb(
+                0xFF0F,
+                bit.band(flags, bit.bnot(mask))
+            )
+            self:push16(self.regs.pc)
+            self.regs.pc = intjumps[i]
+
+            return 20
+        end
+    end
+
+    return 0
 end
 
 local cpf = 70224
 function cpu:runit()
     local tcycles = 0
     while tcycles < 70224 do
+        if self.halt then
+            local pending = bit.band(
+                self.ram:readb(0xFFFF),
+                self.ram:readb(0xFF0F),
+                0x1F
+            )
+
+            if pending == 0 then
+                tcycles = tcycles + 4
+            else
+                self.halt = false
+            end
+        else
+        local intc = self:handint()
+        if intc > 0 then
+            tcycles = tcycles + intc
+        else
         local pc = self.regs["pc"]
         local b0 = self:fetch8()
         self.fpc = pc
         self.fb0 = b0
         self.fb1 = self.ram:readb(pc+1)
         tcycles = tcycles + cpu.opcodes[b0](self)
+        if self.eipend > 0 then
+            self.eipend = self.eipend - 1
+            if self.eipend <= 0 then
+                self.ime = true
+            end
+        end
+    end
+end
     end
     return
 end
