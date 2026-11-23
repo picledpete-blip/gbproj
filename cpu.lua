@@ -278,6 +278,12 @@ cpu.opcodes = {
         self.ram:writeb(0xff00+c, self.regs.a)
         return 8
     end,
+    [0xc5] = function (self)
+        local b = self.regs.b
+        local c = self.regs.c
+        self:push16(b*256+c)
+        return 4
+    end,
     [0xcd] = function(self)
         local low = self:fetch8()
         local high = self:fetch8()
@@ -303,6 +309,12 @@ cpu.opcodes = {
     [0xf3] = function (self)
         self.ime = false
         self.eipend = 0
+        return 4
+    end,
+    [0xf5] = function (self)
+        local a = self.regs.a
+        local f = self.regs.f
+        self:push16(a*256+f)
         return 4
     end,
     [0xfb] = function (self)
