@@ -177,6 +177,19 @@ cpu.opcodes = {
         self.regs:setreg(9,naddr)
         return 16
     end,
+    [0xC9] = function(self)
+        self.regs.pc = self:pop16()
+        return 16
+    end,
+        [0xCD] = function(self)
+        local low = self:fetch8()
+        local high = self:fetch8()
+        local address = high * 256 + low
+        self:push16(self.regs.pc)
+        self.regs.pc = address
+
+        return 24
+    end,
     [0xf3] = function (self)
         self.ime = false
         return 4
@@ -197,9 +210,38 @@ function cpu:init()
     cpu.ram:init()
     cpu.ram:ldrom("tetris.gb")
 end
+function cpu:push16(value)
+    local sp = self.regs.sp
+    sp = (sp - 1) % 65536
+    self.ram:writeb(sp, math.floor(value / 256) % 256)
+    sp = (sp - 1) % 65536
+    self.ram:writeb(sp, value % 256)
+    self.regs.sp = sp
+end
 
+function cpu:pop16()
+    local sp = self.regs.sp
+    local low = self.ram:readb(sp)
+    sp = (sp + 1) % 65536
+    local high = self.ram:readb(sp)
+    sp = (sp + 1) % 65536
+    self.regs.sp = sp
+    return high * 256 + low
+end
+local intjumps = {
+    [0] = 0x0040, -- vblank
+    [1] = 0x0048, -- lcd
+    [2] = 0x0050, -- timer
+    [3] = 0x0058, -- serial
+    [4] = 0x0060  -- joypad
+}
 cpu:handint()
     local ints = bit.band(self.ram:readb(0xff0f), self.ram:readb(0xffff))
+    for i = 0, 4 do
+        local mask = 1 << i
+
+        if (ints & mask) ~= 0 then
+            self.ime = false
 end
 
 local cpf = 70224
