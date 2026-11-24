@@ -70,6 +70,7 @@ function cpu.regs:getflag(mask)
     return math.floor(self.f / mask) % 2 == 1
 end
 
+
 function cpu.regs:setflag(mask, value)
     local current = self.f
     if self:getflag(mask) then
@@ -89,6 +90,128 @@ function cpu:fetch8()
         self.regs.pc = (self.regs.pc + 1) % 65536
     end
     return val
+end
+local cbregs = {
+    "b", "c", "d", "e", "h", "l", nil, "a"
+}
+
+function cpu:cbread(target)
+    if target == 6 then
+        local hl = self.regs.h * 256 + self.regs.l
+        return self.ram:readb(hl)
+    end
+
+    return self.regs[cbregs[target + 1]]
+end
+
+function cpu:cbwrite(target, value)
+    value = value % 256
+
+    if target == 6 then
+        local hl = self.regs.h * 256 + self.regs.l
+        self.ram:writeb(hl, value)
+    else
+        self.regs:setreg(target == 7 and 0 or target + 1, value)
+    end
+end
+cpu.cbopcodes = {}
+
+for opcode = 0x40, 0xFF do
+    local group = math.floor(opcode / 64)
+    local bitnum = math.floor((opcode % 64) / 8)
+    local target = opcode % 8
+
+    cpu.cbopcodes[opcode] = function(self)
+        local val = self:cbread(target)
+        local mask = 2 ^ bitnum
+
+        if group == 1 then
+            self.regs:setflag(FZ, bit.band(val, mask) == 0)
+            self.regs:setflag(FN, false)
+            self.regs:setflag(FH, true)
+
+            return target == 6 and 12 or 8
+
+        elseif group == 2 then
+            self:cbwrite(target, bit.band(val, bit.bnot(mask)))
+
+        elseif group == 3 then
+            self:cbwrite(target, bit.bor(val, mask))
+        end
+
+        return target == 6 and 16 or 8
+    end
+end
+for opcode = 0x00, 0x3F do
+    local operation = math.floor(opcode / 8)
+    local target = opcode % 8
+
+    cpu.cbopcodes[opcode] = function(self)
+        local val = self:cbread(target)
+        local carry = false
+        local result = 0
+
+        if operation == 0 then
+            -- RLC
+            carry = bit.band(val, 0x80) ~= 0
+            result = bit.band(bit.lshift(val, 1), 0xFF)
+            if carry then result = result + 1 end
+
+        elseif operation == 1 then
+            -- RRC
+            carry = bit.band(val, 1) ~= 0
+            result = bit.rshift(val, 1)
+            if carry then result = result + 128 end
+
+        elseif operation == 2 then
+            -- RL
+            local oldcarry = self.regs:getflag(FC)
+            carry = bit.band(val, 0x80) ~= 0
+            result = bit.band(bit.lshift(val, 1), 0xFF)
+            if oldcarry then result = result + 1 end
+
+        elseif operation == 3 then
+            -- RR
+            local oldcarry = self.regs:getflag(FC)
+            carry = bit.band(val, 1) ~= 0
+            result = bit.rshift(val, 1)
+            if oldcarry then result = result + 128 end
+
+        elseif operation == 4 then
+            -- SLA
+            carry = bit.band(val, 0x80) ~= 0
+            result = bit.band(bit.lshift(val, 1), 0xFF)
+
+        elseif operation == 5 then
+            -- SRA
+            carry = bit.band(val, 1) ~= 0
+            result = bit.bor(
+                bit.rshift(val, 1),
+                bit.band(val, 0x80)
+            )
+
+        elseif operation == 6 then
+            -- SWAP
+            result = bit.bor(
+                bit.lshift(bit.band(val, 0x0F), 4),
+                bit.rshift(bit.band(val, 0xF0), 4)
+            )
+
+        elseif operation == 7 then
+            -- SRL
+            carry = bit.band(val, 1) ~= 0
+            result = bit.rshift(val, 1)
+        end
+
+        self:cbwrite(target, result)
+
+        self.regs:setflag(FZ, result == 0)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, false)
+        self.regs:setflag(FC, carry)
+
+        return target == 6 and 16 or 8
+    end
 end
 
 cpu.opcodes = {
@@ -160,12 +283,31 @@ cpu.opcodes = {
         self.regs:setreg(14, h*256+l)
         return 12
     end,
+    [0x28] = function (self)
+        
+        local offset = self:fetch8()
+        if self.regs:getflag(FZ) then
+            if offset > 127 then
+                offset = offset - 256
+            end
+            self.regs:setreg(9, self.regs.pc + offset)
+            return 12
+        end
+        return 8
+    end,
     [0x2a] = function (self)
         local hl = self.regs.h * 256 + self.regs.l
         local val = self.ram:readb(hl)
         self.regs:setreg(0,val)
         self.regs:setreg(14,hl+1)
         return 8
+    end,
+    [0x2f] = function (self)
+        
+        self.regs:setreg(0,bit.bnot(self.regs.a))
+        self.regs:setflag(FN, true)
+        self.regs:setflag(FH, true)
+        return 4
     end,
     [0x30] = function (self)
         
@@ -186,21 +328,60 @@ cpu.opcodes = {
         return 12
     end,
     [0x32] = function (self)
-        local hl = (self.regs["h"] * 256) + self.regs["l"]
+        local hl = (self.regs.h * 256) + self.regs.l
         local a = self.regs.a
         self.ram:writeb(hl,a)
         self.regs:setreg(14,hl-1)
         return 8
     end,
+    [0x34] = function (self)
+        local hl = (self.regs.h * 256) + self.regs.l
+        local val = self.ram:readb(hl)
+        self.regs:setreg(14, hl+1) 
+        self.regs:setflag(FZ, val == 0xff)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, (val % 0x10) == 0x0f)
+        return 12
+    end,
     [0x36] = function (self)
-        local hl = (self.regs["h"] * 256) + self.regs["l"]
+        local hl = (self.regs.h * 256) + self.regs.l
         local val = self:fetch8()
         self.ram:writeb(hl,val)
         return 12
     end,
+    [0x3c] = function (self)
+        local a  = self.regs.a
+        self.regs:setreg(0, a+1)
+        self.regs:setflag(FZ, a == 0xff)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, (a % 0x10) == 0x0f)
+        return 4
+    end,
+
+    [0x3d] = function (self)
+        local a  = self.regs.a
+        self.regs:setreg(0, a-1)
+        self.regs:setflag(FZ, a == 1)
+        self.regs:setflag(FN, true)
+        self.regs:setflag(FH, (a % 16) == 0)
+        return 4
+    end,
     [0x3e] = function (self)
         local v = self:fetch8()
         self.regs:setreg(0, v)
+        return 8
+    end,
+    [0x47] = function (self)
+        self.regs:setreg(1, self.regs.a)
+        return 4
+    end,
+    [0x4f] = function (self)
+        self.regs:setreg(2,self.regs.a)
+        return 4
+    end,
+    [0x71] = function (self)
+        local hl = self.regs.h * 256 + self.regs.l
+        self.ram:writeb(hl,self.regs.c)
         return 8
     end,
     [0x76] = function(self)
@@ -223,6 +404,10 @@ cpu.opcodes = {
         self.regs:setreg(0,b)
         return 4
     end,
+    [0x79] = function (self)
+        self.regs:setreg(0, self.regs.c)
+        return 4
+    end,
     [0x80] = function(self)
         local a = self.regs.a
         local b = self.regs.b
@@ -238,10 +423,26 @@ cpu.opcodes = {
 
         return 4
     end,
+    [0xa1] = function (self)
+        self.regs:setreg(0, bit.band(self.regs.a, self.regs.c))
+        self.regs:setflag(FZ, bit.band(self.regs.a, self.regs.c) == 0)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, true)
+        self.regs:setflag(FC, false)
+        return 4
+    end,
     [0xa7] = function (self)
         self.regs:setflag(FZ, self.regs.a == 0)
         self.regs:setflag(FN, false)
         self.regs:setflag(FH, true)
+        self.regs:setflag(FC, false)
+        return 4
+    end,
+    [0xa9] = function (self)
+        self.regs:setreg(0, bit.bxor(self.regs.a, self.regs.b))
+        self.regs:setflag(FZ, bit.bxor(self.regs.a, self.regs.b) == 0)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, false)
         self.regs:setflag(FC, false)
         return 4
     end,
@@ -254,6 +455,15 @@ cpu.opcodes = {
 
         return 4
     end,
+    [0xb0] = function (self)
+        local val = bit.bor(self.regs.a, self.regs.b)
+        self.regs:setreg(0,val)
+        self.regs:setflag(FZ, val == 0)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, false)
+        self.regs:setflag(FC, false)
+        return 4
+    end,
     [0xb1] = function (self)
         local a = self.regs.a
         local c = self.regs.c
@@ -264,15 +474,39 @@ cpu.opcodes = {
         self.regs:setflag(FC, false)
         return 4
     end,
+    [0xc0] = function(self)
+        if not self.regs:getflag(FZ) then
+            self.regs.pc = self:pop16()
+            return 20
+        end
+        return 8
+    end,
+    [0xc1] = function(self)
+        local val = self:pop16()
+        self.regs:setreg(12, val)
+        return 12
+    end,
     [0xC3] = function(self)
         local low = self:fetch8()
         local high = self:fetch8()
         self.regs.pc = high * 256 + low
         return 16
     end,
+    [0xc8] = function(self)
+        if self.regs:getflag(FZ) then
+            self.regs.pc = self:pop16()
+            return 20
+        end
+        return 8
+    end,
     [0xc9] = function(self)
         self.regs.pc = self:pop16()
         return 16
+    end,
+    [0xd1] = function(self)
+        local val = self:pop16()
+        self.regs:setreg(13, val)
+        return 12
     end,
     [0xd5] = function (self)
         local d = self.regs.d
@@ -280,9 +514,19 @@ cpu.opcodes = {
         self:push16(d*256+e)
         return 16
     end,
+    [0xd9] = function(self)
+        self.regs.pc = self:pop16()
+        self.ime = true
+        return 16
+    end,
     [0xe0] = function(self)
         local u8 = self:fetch8()
         self.ram:writeb(0xff00+u8, self.regs.a)
+        return 12
+    end,
+    [0xe1] = function(self)
+        local val = self:pop16()
+        self.regs:setreg(14, val)
         return 12
     end,
     [0xe2] = function(self)
@@ -302,6 +546,15 @@ cpu.opcodes = {
         local c = self.regs.c
         self:push16(b*256+c)
         return 16
+    end,
+    [0xcb] = function(self)
+        local opcode = self:fetch8()
+        return self.cbopcodes[opcode](self)
+    end,
+    [0xe6] = function(self)
+        local val = self:fetch8()
+        self.regs:setreg(0, bit.band(val,self.regs.a))
+        return 8
     end,
     [0xcd] = function(self)
         local low = self:fetch8()
@@ -325,6 +578,11 @@ cpu.opcodes = {
         self.regs:setreg(0,self.ram:readb(0xff00 + u8))
         return 12
     end,
+    [0xf1] = function(self)
+        local val = self:pop16()
+        self.regs:setreg(11, val)
+        return 12
+    end,
     [0xf3] = function (self)
         self.ime = false
         self.eipend = 0
@@ -339,6 +597,13 @@ cpu.opcodes = {
     [0xfb] = function (self)
         self.eipend = 2
         return 4
+    end,
+    [0xfa] = function (self)
+        local l = self:fetch8()
+        local h = self:fetch8()
+        local addr = h*256 + l
+        self.regs:setreg(0,self.ram:readb(addr))
+        return 16
     end,
     [0xfe] = function(self)
         local val = self:fetch8()
@@ -417,7 +682,7 @@ function cpu:handint()
 
     return 0
 end
-
+local throwerr = true
 local cpf = 70224
 function cpu:runit()
     local tcycles = 0
@@ -447,7 +712,14 @@ function cpu:runit()
         self.fpc = pc
         self.fb0 = b0
         self.fb1 = self.ram:readb(pc+1)
+        if throwerr == false and cpu.opcodes[b0] ~= nil then
         cycles = cpu.opcodes[b0](self)
+        elseif throwerr == true then
+        cycles = cpu.opcodes[b0](self)
+        else
+            print(self.regs.pc)
+            cycles = 4
+        end
         if self.eipend > 0 then
             self.eipend = self.eipend - 1
             if self.eipend <= 0 then
