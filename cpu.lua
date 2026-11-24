@@ -265,6 +265,30 @@ cpu.opcodes = {
         self.regs:setreg(2, v)
         return 8
     end,
+    [0x11] = function (self)
+        local val = self:fetch8() * 256 + self:fetch8()
+        self.regs:setreg(13,val)
+        return 12 
+    end,
+    [0x12] = function (self)
+        local de = self.regs.d * 256 + self.regs.e
+        self.ram:writeb(de,self.regs.a)
+        return 8
+    end,
+    [0x16] = function (self)
+        local val = self:fetch8()
+        self.regs:setreg(3,val)
+        return 8
+    end,
+    [0x19] = function (self)
+        local hl = self.regs.h * 256 + self.regs.l
+        local de = self.regs.d * 256 + self.regs.e
+        self.regs:setreg(14,hl+de)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, (bit.band(hl, 0x0FFF) + bit.band(de, 0x0FFF)) > 0x0FFF)
+        self.regs:setflag(FC, hl+de > 0xffff)
+        return 8    
+    end,
     [0x20] = function (self)
         
         local offset = self:fetch8()
@@ -282,6 +306,11 @@ cpu.opcodes = {
         local h = self:fetch8()
         self.regs:setreg(14, h*256+l)
         return 12
+    end,
+    [0x23] = function (self)
+        local hl = self.regs.h * 256 + self.regs.l
+        self.regs:setreg(14,hl+1)
+        return 8
     end,
     [0x28] = function (self)
         
@@ -379,6 +408,20 @@ cpu.opcodes = {
         self.regs:setreg(2,self.regs.a)
         return 4
     end,
+    [0x56] = function (self)
+        local hl = self.regs.h * 256 + self.regs.l
+        self.regs:setreg(3,self.ram:readb(hl))
+        return 8
+    end,
+    [0x5e] = function (self)
+        self.regs:setreg(4,self.ram:readb(self.regs.h*256 + self.regs.l))
+        return 8
+    end,
+    [0x5f] = function (self)
+        local a = self.regs.a
+        self.regs:setreg(4,a)
+        return 4
+    end,
     [0x71] = function (self)
         local hl = self.regs.h * 256 + self.regs.l
         self.ram:writeb(hl,self.regs.c)
@@ -421,6 +464,15 @@ cpu.opcodes = {
 
         self.regs.a = result % 256
 
+        return 4
+    end,
+    [0x87] = function (self)
+        local a = self.regs.a
+        self.regs:setreg(0,a+a)
+        self.regs:setflag(FZ, 0 == a)
+        self.regs:setflag(FN, false)
+        self.regs:setflag(FH, (a%0x10) + (a%0x10) > 0xf)
+        self.regs:setflag(FC, a+a > 0xff)
         return 4
     end,
     [0xa1] = function (self)
@@ -565,12 +617,23 @@ cpu.opcodes = {
 
         return 24
     end,
+    [0xe9] = function(self)
+        local hl = self.regs.h * 256 + self.regs.l
+        self.regs.pc = hl
+
+        return 4
+    end,
     [0xea] = function (self)
         local v1 = self:fetch8()
         local v2 = self:fetch8()
         local addr = (v2 * 256) + v1
         local a = self.regs.a
         self.ram:writeb(addr,a)
+        return 16
+    end,
+    [0xef] = function (self)
+        self:push16(self.regs.pc)
+        self.regs.pc = 0x0028
         return 16
     end,
     [0xf0] = function(self)
